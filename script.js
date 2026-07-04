@@ -261,9 +261,9 @@ function renderQuiz() {
 
 function renderResult() {
     const MBI_ROWS = [
-        { id: 'emotionalExhaustion', title: 'Kiệt quệ cảm xúc', max: 30 },
-        { id: 'cynicism', title: 'Hoài nghi', max: 24 },
-        { id: 'academicEfficacy', title: 'Hiệu quả học tập', max: 36 }
+        { id: 'emotionalExhaustion', title: 'Kiệt quệ cảm xúc', max: 30, helper: '' },
+        { id: 'cynicism', title: 'Hoài nghi', max: 24, helper: '' },
+        { id: 'academicEfficacy', title: 'Hiệu quả học tập', max: 36, helper: '' }
     ];
     const DASS_ROWS = [
         { id: 'stress', title: 'Stress', max: 42 },
