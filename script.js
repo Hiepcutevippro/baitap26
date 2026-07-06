@@ -1,10 +1,32 @@
-// --- 1. DỮ LIỆU CÂU HỎI VÀ THANG ĐO ---
+const SUPABASE_URL = 'https://iwncqexhxnflcmrovfga.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_vdDbdvfTImKTM_WHhM8POw_-WrvjCZj';
+let db = null; // Supabase client
+let supabaseReady = false;
+try {
+    if (window.supabase && window.supabase.createClient) {
+        db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        supabaseReady = true;
+        console.log('✅ Supabase đã kết nối thành công!');
+    } else {
+        console.warn('⚠️ Supabase SDK chưa load. Dùng chế độ offline (localStorage).');
+    }
+} catch (err) {
+    console.error('❌ Lỗi khởi tạo Supabase:', err.message);
+    console.warn('⚠️ Chuyển sang chế độ offline (localStorage).');
+}
+
+// Theme constants (shifted greener)
+const THEME = {
+    primary: '#2FBF9A',
+    accent: '#7EE3C6',
+    dark: '#0F4D40'
+};
+
 const MBI_SCALE = [
     { value: 0, label: 'Không bao giờ' }, { value: 1, label: 'Vài lần/năm' },
     { value: 2, label: '1 lần/tháng' }, { value: 3, label: 'Thỉnh thoảng/tháng' },
     { value: 4, label: '1 lần/tuần' }, { value: 5, label: 'Vài lần/tuần' }, { value: 6, label: 'Mỗi ngày' }
 ];
-
 const DASS_SCALE = [
     { value: 0, label: 'Không đúng với tôi chút nào' }, { value: 1, label: 'Đúng phần nào/thỉnh thoảng' },
     { value: 2, label: 'Đúng phần nhiều/thường đúng' }, { value: 3, label: 'Hoàn toàn đúng/hầu như lúc nào' }
@@ -33,7 +55,6 @@ const DASS_QUESTIONS = [
     { id: 'dass-20', text: 'Bạn hay sợ vô cớ', scale: DASS_SCALE, sectionTitle: 'Phần 1 — DASS-21', section: 'DASS-21' },
     { id: 'dass-21', text: 'Bạn thấy cuộc sống vô nghĩa', scale: DASS_SCALE, sectionTitle: 'Phần 1 — DASS-21', section: 'DASS-21' }
 ];
-
 const MBI_QUESTIONS = [
     { id: 'mbi-1', text: 'Bạn cảm thấy kiệt quệ về mặt cảm xúc do việc học của mình.', scale: MBI_SCALE, sectionTitle: 'Phần 2 — MBI-SS', section: 'MBI-SS' },
     { id: 'mbi-2', text: 'Bạn hoài nghi về ý nghĩa và tầm quan trọng của việc học.', scale: MBI_SCALE, sectionTitle: 'Phần 2 — MBI-SS', section: 'MBI-SS' },
@@ -52,41 +73,234 @@ const MBI_QUESTIONS = [
     { id: 'mbi-15', text: 'Bạn tin rằng mình đóng góp một cách hiệu quả vào các lớp học mà mình tham gia.', scale: MBI_SCALE, sectionTitle: 'Phần 2 — MBI-SS', section: 'MBI-SS' }
 ];
 
-// Gộp mảng và tự động cấp số thứ tự
-const QUESTIONS = [...DASS_QUESTIONS, ...MBI_QUESTIONS].map((q, idx) => ({ ...q, order: idx + 1 }));
+function shuffleArray(arr) {
+    const shuffled = [...arr];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    return shuffled;
+}
+
+let QUESTIONS = shuffleArray([...DASS_QUESTIONS, ...MBI_QUESTIONS]).map((q, idx) => ({ ...q, order: idx + 1 }));
 
 // Logic nhóm điểm
 const DASS_STRESS = ['dass-1', 'dass-6', 'dass-8', 'dass-11', 'dass-12', 'dass-14', 'dass-18'];
 const DASS_ANXIETY = ['dass-2', 'dass-4', 'dass-7', 'dass-9', 'dass-15', 'dass-19', 'dass-20'];
 const DASS_DEPRESSION = ['dass-3', 'dass-5', 'dass-10', 'dass-13', 'dass-16', 'dass-17', 'dass-21'];
-
 const MBI_EMOTIONAL_EXHAUSTION = ['mbi-1', 'mbi-4', 'mbi-6', 'mbi-8', 'mbi-13'];
 const MBI_CYNICISM = ['mbi-2', 'mbi-9', 'mbi-10', 'mbi-12'];
 const MBI_ACADEMIC_EFFICACY = ['mbi-3', 'mbi-5', 'mbi-7', 'mbi-11', 'mbi-14', 'mbi-15'];
 
-// --- 2. TRẠNG THÁI ỨNG DỤNG ---
-let step = 'start'; // 'start' | 'quiz' | 'result'
+let step = 'auth';
+let authMode = 'login';
 let currentIndex = 0;
 let answers = {};
 let currentScores = {};
-let statsChartInstance = null;
-let radarChartInstance = null;
+let communityStats = { count: 0, emotionalExhaustion: 0, cynicism: 0, academicEfficacy: 0, stress: 0, anxiety: 0, depression: 0 };
+let dassBarChartInstance = null;
 let donutChartInstance = null;
-let stats = { count: 0, emotionalExhaustion: 0, cynicism: 0, academicEfficacy: 0, stress: 0, anxiety: 0, depression: 0 };
+let communityMbiChartInstance = null;
+let communityDassChartInstance = null;
+let currentUser = null;
+let authLoading = false;
+let authError = '';
+let authSuccess = '';
 
-// Load dữ liệu cũ từ trình duyệt
+// Load stats cũ từ localStorage (fallback)
 try {
     const saved = localStorage.getItem('mental_health_survey_v2');
-    if (saved) stats = JSON.parse(saved);
+    if (saved) communityStats = JSON.parse(saved);
 } catch (e) { }
 
-// --- 3. HÀM TÍNH TOÁN ---
+let localUsersDb = JSON.parse(localStorage.getItem('mental_health_users') || '[]');
+async function hashPassword(password) {
+    const data = new TextEncoder().encode(password);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+async function verifyLocalPassword(user, password) {
+    if (user.passwordHash) return user.passwordHash === await hashPassword(password);
+    return user.password === password;
+}
+async function setLocalPassword(user, password) {
+    user.passwordHash = await hashPassword(password);
+    delete user.password;
+}
+
+async function handleAuthSubmit(e) {
+    e.preventDefault();
+    authLoading = true;
+    authError = '';
+    authSuccess = '';
+    renderApp();
+    const fd = new FormData(e.target);
+    const email = fd.get('email').trim();
+    const password = fd.get('password');
+    const displayName = fd.get('name') ? fd.get('name').trim() : '';
+    try {
+        if (supabaseReady) {
+            // ===== SUPABASE AUTH =====
+            if (authMode === 'register') {
+                const { data, error } = await db.auth.signUp({
+                    email: email,
+                    password: password,
+                    options: { data: { display_name: displayName || email.split('@')[0] } }
+                });
+                if (error) throw error;
+                currentUser = {
+                    id: data.user.id,
+                    name: displayName || email.split('@')[0],
+                    email: email,
+                    isIncognito: false
+                };
+            } else {
+                const { data, error } = await db.auth.signInWithPassword({
+                    email: email,
+                    password: password
+                });
+                if (error) throw error;
+                currentUser = {
+                    id: data.user.id,
+                    name: data.user.user_metadata?.display_name || email.split('@')[0],
+                    email: email,
+                    isIncognito: false
+                };
+            }
+        } else {
+            // ===== FALLBACK: localStorage AUTH =====
+            if (authMode === 'register') {
+                const exists = localUsersDb.find(u => u.email === email);
+                if (exists) throw new Error('Email này đã được đăng ký!');
+                const newUser = { email, name: displayName || email.split('@')[0] };
+                await setLocalPassword(newUser, password);
+                localUsersDb.push(newUser);
+                localStorage.setItem('mental_health_users', JSON.stringify(localUsersDb));
+                currentUser = { id: null, name: newUser.name, email: email, isIncognito: false };
+            } else {
+                const user = localUsersDb.find(u => u.email === email);
+                if (!user) throw new Error('Sai email hoặc mật khẩu!');
+                const passwordMatches = await verifyLocalPassword(user, password);
+                if (!passwordMatches) throw new Error('Sai email hoặc mật khẩu!');
+                currentUser = { id: null, name: user.name, email: email, isIncognito: false };
+            }
+        }
+        step = 'start';
+    } catch (err) {
+        authError = err.message === 'Invalid login credentials'
+            ? 'Sai email hoặc mật khẩu!'
+            : err.message === 'User already registered'
+                ? 'Email này đã được đăng ký!'
+                : err.message;
+    }
+    authLoading = false;
+    renderApp();
+}
+
+function handleIncognitoLogin() {
+    const randomId = Math.floor(Math.random() * 9000) + 1000;
+    currentUser = { id: null, name: 'Học sinh #' + randomId, isIncognito: true };
+    step = 'start';
+    renderApp();
+}
+
+async function handleChangePassword() {
+    if (!currentUser || currentUser.isIncognito) {
+        window.alert('Bạn đang ở chế độ ẩn danh nên không thể đổi mật khẩu.');
+        return;
+    }
+    const newPassword = window.prompt('Nhập mật khẩu mới (tối thiểu 6 ký tự):');
+    if (!newPassword) return;
+    if (newPassword.length < 6) {
+        window.alert('Mật khẩu mới phải có ít nhất 6 ký tự.');
+        return;
+    }
+    const confirmPassword = window.prompt('Xác nhận mật khẩu mới:');
+    if (newPassword !== confirmPassword) {
+        window.alert('Xác nhận mật khẩu không khớp.');
+        return;
+    }
+    try {
+        if (supabaseReady) {
+            const { error } = await db.auth.updateUser({ password: newPassword });
+            if (error) throw error;
+        } else {
+            const userIndex = localUsersDb.findIndex(u => u.email === currentUser.email);
+            if (userIndex === -1) throw new Error('Không tìm thấy tài khoản trong hệ thống.');
+            await setLocalPassword(localUsersDb[userIndex], newPassword);
+            localStorage.setItem('mental_health_users', JSON.stringify(localUsersDb));
+        }
+        window.alert('Đổi mật khẩu thành công.');
+    } catch (err) {
+        window.alert(err.message || 'Không thể đổi mật khẩu lúc này.');
+    }
+}
+
+async function handleLogout() {
+    if (supabaseReady) {
+        try { await db.auth.signOut(); } catch (e) { }
+    }
+    currentUser = null;
+    step = 'auth';
+    authMode = 'login';
+    authError = '';
+    authSuccess = '';
+    renderApp();
+}
+
+async function saveResult(scores) {
+    const record = {
+        user_name: currentUser?.isIncognito ? currentUser.name : (currentUser?.name || 'Ẩn danh'),
+        is_incognito: currentUser?.isIncognito || false,
+        stress: scores.stress * 2,
+        anxiety: scores.anxiety * 2,
+        depression: scores.depression * 2,
+        emotional_exhaustion: scores.emotionalExhaustion,
+        cynicism: scores.cynicism,
+        academic_efficacy: scores.academicEfficacy
+    };
+    if (supabaseReady) {
+        if (currentUser?.id) record.user_id = currentUser.id;
+        const { error } = await db.from('survey_results').insert([record]);
+        if (error) console.error('Lỗi lưu Supabase:', error.message);
+        else console.log('✅ Đã lưu kết quả lên máy chủ!');
+    }
+    // Luôn lưu localStorage để có fallback
+    communityStats.count += 1;
+    communityStats.emotionalExhaustion += scores.emotionalExhaustion;
+    communityStats.cynicism += scores.cynicism;
+    communityStats.academicEfficacy += scores.academicEfficacy;
+    communityStats.stress += (scores.stress * 2);
+    communityStats.anxiety += (scores.anxiety * 2);
+    communityStats.depression += (scores.depression * 2);
+    localStorage.setItem('mental_health_survey_v2', JSON.stringify(communityStats));
+}
+
+async function loadCommunityStats() {
+    if (!supabaseReady) return; // Dùng localStorage stats đã load ở đầu
+    try {
+        const { data, error } = await db.from('survey_results').select('*');
+        if (error || !data || data.length === 0) return;
+        const count = data.length;
+        let totalEE = 0, totalCY = 0, totalAE = 0, totalST = 0, totalAX = 0, totalDE = 0;
+        data.forEach(row => {
+            totalEE += row.emotional_exhaustion || 0;
+            totalCY += row.cynicism || 0;
+            totalAE += row.academic_efficacy || 0;
+            totalST += row.stress || 0;
+            totalAX += row.anxiety || 0;
+            totalDE += row.depression || 0;
+        });
+        communityStats = { count, emotionalExhaustion: totalEE, cynicism: totalCY, academicEfficacy: totalAE, stress: totalST, anxiety: totalAX, depression: totalDE };
+    } catch (err) {
+        console.error('Lỗi tải thống kê:', err.message);
+    }
+}
+
 const getSum = (ansObj, ids) => ids.reduce((total, id) => total + (ansObj[id] || 0), 0);
-
 function getLevelConfig(scale, rawScore) {
-    const score = rawScore * 2; // Nhân đôi cho chuẩn DASS-42
+    const score = rawScore * 2;
     let label = 'Bình thường';
-
     if (scale === 'stress') {
         if (score >= 34) label = 'Rất nặng'; else if (score >= 26) label = 'Nặng';
         else if (score >= 20) label = 'Vừa'; else if (score >= 16) label = 'Nhẹ';
@@ -97,286 +311,299 @@ function getLevelConfig(scale, rawScore) {
         if (score >= 20) label = 'Rất nặng'; else if (score >= 16) label = 'Nặng';
         else if (score >= 12) label = 'Vừa'; else if (score >= 8) label = 'Nhẹ';
     }
-
-    if (label === 'Bình thường') return { label, className: 'border-emerald-200 bg-emerald-50 text-emerald-800', dot: 'bg-emerald-500', hex: '#10B981' };
-    if (label === 'Nhẹ' || label === 'Vừa') return { label, className: 'border-amber-200 bg-amber-50 text-amber-900', dot: 'bg-amber-500', hex: '#F59E0B' };
-    return { label, className: 'border-rose-200 bg-rose-50 text-rose-900', dot: 'bg-rose-500', hex: '#F43F5E' };
+    if (label === 'Bình thường') return { label, className: 'border-emerald-200 bg-emerald-50 text-emerald-800', dot: 'bg-emerald-500', hex: '#10B981', icon: 'smile' };
+    if (label === 'Nhẹ') return { label, className: 'border-sky-200 bg-sky-50 text-sky-800', dot: 'bg-sky-500', hex: THEME.primary, icon: 'meh' };
+    if (label === 'Vừa') return { label, className: 'border-amber-200 bg-amber-50 text-amber-900', dot: 'bg-amber-500', hex: '#F59E0B', icon: 'frown' };
+    return { label, className: 'border-rose-200 bg-rose-50 text-rose-900', dot: 'bg-rose-500', hex: '#F43F5E', icon: 'alert-triangle' };
 }
 
-// Lời khuyên tương ứng với từng mức độ điểm
 function getAdvice(label) {
     switch (label) {
-        case 'Bình thường':
-            return 'Bạn đang duy trì trạng thái tâm lý khá ổn định. Hãy tiếp tục ngủ đủ giấc, vận động nhẹ và giữ kết nối với bạn bè, người thân.';
-        case 'Nhẹ':
-            return 'Có vài dấu hiệu căng thẳng nhẹ. Thử dành 10-15 phút mỗi ngày để nghỉ ngơi, hít thở sâu hoặc đi dạo để lấy lại năng lượng.';
-        case 'Vừa':
-            return 'Mức độ đang ở ngưỡng vừa. Bạn nên sắp xếp lại lịch học - nghỉ hợp lý hơn, thử các kỹ thuật thư giãn và chia sẻ cảm xúc với người bạn tin tưởng.';
-        case 'Nặng':
-            return 'Chỉ số đang ở mức nặng. Bạn nên tìm đến phòng tư vấn tâm lý học đường hoặc chuyên gia để được lắng nghe và hỗ trợ sớm.';
-        default:
-            return 'Chỉ số đang ở mức rất cao. Rất khuyến khích bạn liên hệ ngay với chuyên gia tâm lý hoặc đường dây hỗ trợ sức khỏe tâm thần gần nhất.';
+        case 'Bình thường': return 'Bạn đang duy trì trạng thái tâm lý khá ổn định. Hãy tiếp tục ngủ đủ giấc, vận động nhẹ và giữ kết nối với bạn bè.';
+        case 'Nhẹ': return 'Có vài dấu hiệu căng thẳng nhẹ. Thử dành 10-15 phút mỗi ngày để nghỉ ngơi, hít thở sâu hoặc đi dạo.';
+        case 'Vừa': return 'Mức độ đang ở ngưỡng vừa. Bạn nên sắp xếp lại lịch học hợp lý hơn, thử các kỹ thuật thư giãn và chia sẻ cảm xúc.';
+        case 'Nặng': return 'Chỉ số đang ở mức nặng. Bạn nên tìm đến phòng tư vấn tâm lý học đường hoặc chuyên gia để được hỗ trợ sớm.';
+        default: return 'Chỉ số đang ở mức rất cao. Khuyến khích bạn liên hệ ngay với chuyên gia tâm lý hoặc đường dây hỗ trợ sức khỏe tâm thần.';
     }
 }
 
-// --- 4. HÀM RENDER GIAO DIỆN ---
+function getFirstName(fullName) {
+    if (!fullName) return '';
+    const parts = fullName.trim().split(' ');
+    return parts[parts.length - 1];
+}
+
+function renderAuth() {
+    const isLogin = authMode === 'login';
+    const isRegister = authMode === 'register';
+    const cloudBadge = supabaseReady
+        ? '<span class="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 border border-emerald-200 px-3 py-1 text-[10px] font-bold text-emerald-700 uppercase tracking-widest"><i data-lucide="cloud" class="w-3 h-3"></i> Supabase Cloud</span>'
+        : '';
+    return `
+            <div class="flex-1 flex items-center justify-center px-4 py-12 animate-fade-in bg-brand-surface">
+                <div class="w-full max-w-md bg-white rounded-[2rem] p-8 shadow-xl shadow-teal-100/50 border border-teal-50">
+                    <div class="flex justify-center mb-6">
+                        <div class="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-mint to-brand-blue shadow-lg" style="width:72px;height:72px;">
+                            <img src="476607564_1118966020245066_3011246608916633901_n.jpg" alt="logo" style="width:60px;height:60px;object-fit:cover;border-radius:8px;">
+                        </div>
+                    </div>
+                    <h2 class="text-3xl font-black text-brand-dark text-center mb-2 tracking-tight">THPT GIA LỘC</h2>
+                    <p class="text-slate-500 text-center text-sm font-semibold mb-2">Khảo sát tâm lý học đường</p>
+                    <div class="flex items-center justify-center gap-2 mb-6">${cloudBadge}</div>
+                    <div class="flex border-b border-slate-100 mb-6 pb-2 gap-6 justify-center">
+                        <span onclick="authMode='login'; authError=''; authSuccess=''; renderApp();" class="auth-tab text-sm font-bold uppercase tracking-wider cursor-pointer ${isLogin ? 'active text-brand-blue' : 'text-slate-400 hover:text-slate-600'}">Đăng nhập</span>
+                        <span onclick="authMode='register'; authError=''; authSuccess=''; renderApp();" class="auth-tab text-sm font-bold uppercase tracking-wider cursor-pointer ${isRegister ? 'active text-brand-blue' : 'text-slate-400 hover:text-slate-600'}">Đăng ký</span>
+                    </div>
+                    ${authError ? '<div class="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-sm font-semibold flex items-center gap-2"><i data-lucide="alert-circle" class="w-4 h-4 shrink-0"></i><span>' + authError + '</span></div>' : ''}
+                    ${authSuccess ? '<div class="mb-4 p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm font-semibold flex items-center gap-2"><i data-lucide="check-circle" class="w-4 h-4 shrink-0"></i><span>' + authSuccess + '</span></div>' : ''}
+                    
+                    <form onsubmit="handleAuthSubmit(event)" class="space-y-4">
+                        ${!isLogin ? '<div><label class="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1 ml-1">Tên hiển thị</label><input type="text" name="name" required placeholder="Ví dụ: Hiệp Bùi đz" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-slate-700 placeholder:text-slate-400 focus:outline-none focus:border-brand-blue focus:ring-1 focus:ring-brand-blue transition"></div>' : ''}
+                        <div>
+                            <label class="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1 ml-1">Email</label>
+                            <input type="email" name="email" required placeholder="your@email.com" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-slate-700 placeholder:text-slate-400 focus:outline-none focus:border-brand-blue focus:ring-1 focus:ring-brand-blue transition">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1 ml-1">Mật khẩu</label>
+                            <input type="password" name="password" required minlength="6" placeholder="Tối thiểu 6 ký tự" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-slate-700 placeholder:text-slate-400 focus:outline-none focus:border-brand-blue focus:ring-1 focus:ring-brand-blue transition">
+                        </div>
+                        <button type="submit" ${authLoading ? 'disabled' : ''} class="w-full bg-gradient-to-r from-brand-blue to-brand-mint text-white font-black rounded-xl px-4 py-3.5 mt-2 shadow-lg disabled:opacity-60">
+                            ${authLoading ? 'Đang xử lý...' : (isLogin ? 'Đăng nhập' : 'Tạo tài khoản')}
+                        </button>
+                    </form>
+
+                    <div class="mt-6 relative flex items-center justify-center">
+                        <div class="border-t border-slate-200 w-full absolute"></div>
+                        <span class="bg-white px-3 text-xs font-bold text-slate-400 relative z-10 uppercase tracking-widest">Hoặc</span>
+                    </div>
+                    <button onclick="handleIncognitoLogin()" class="w-full mt-6 bg-slate-50 border border-slate-200 text-slate-600 font-bold rounded-xl px-4 py-3 hover:bg-slate-100 transition-colors flex items-center justify-center gap-2 group">
+                        <i data-lucide="eye-off" class="w-5 h-5 text-slate-400 group-hover:text-brand-blue transition-colors"></i>
+                        <span>Tiếp tục ẩn danh</span>
+                    </button>
+                </div>
+            </div>`;
+}
+
 function renderHeader() {
     const answeredCount = Object.keys(answers).length;
     const progress = (answeredCount / QUESTIONS.length) * 100;
+    let userHtml = '';
+    if (currentUser) {
+        const displayName = getFirstName(currentUser.name);
+        const avatarUrl = currentUser.isIncognito
+            ? 'https://api.dicebear.com/7.x/shapes/svg?seed=' + currentUser.name + '&backgroundColor=6BA4CC'
+            : 'https://api.dicebear.com/7.x/avataaars/svg?seed=' + currentUser.name + '&backgroundColor=6BA4CC';
+        const isIncognito = currentUser.isIncognito;
+        userHtml = `
+                <div class="flex items-center gap-2 md:gap-3 bg-white rounded-full pr-3 pl-1.5 py-1.5 border border-sky-100 shadow-sm">
+                    <img src="${avatarUrl}" alt="Avatar" class="w-8 h-8 rounded-full border border-sky-100 bg-slate-50">
+                    <div class="text-left mr-1 min-w-0">
+                        <p class="text-[9px] font-bold text-slate-400 leading-none uppercase tracking-wider mb-0.5">${isIncognito ? 'Trạng thái' : 'Xin chào,'}</p>
+                        <p class="text-sm font-black text-brand-dark leading-none max-w-[140px] truncate">${isIncognito ? currentUser.name : displayName + '!'}</p>
+                    </div>
+                    ${!isIncognito ? `
+                    <div class="flex items-center gap-1 border-l border-slate-200 pl-2 ml-1">
+                        <button onclick="handleChangePassword()" class="flex items-center justify-center h-7 w-7 rounded-full bg-slate-100 hover:bg-brand-blue hover:text-white transition-colors text-slate-500" title="Đổi mật khẩu">
+                            <i data-lucide="key-round" class="h-3.5 w-3.5"></i>
+                        </button>
+                        <button onclick="handleLogout()" class="flex items-center justify-center h-7 w-7 rounded-full bg-slate-100 hover:bg-rose-500 hover:text-white transition-colors text-slate-500" title="Đăng xuất">
+                            <i data-lucide="log-out" class="h-3.5 w-3.5"></i>
+                        </button>
+                    </div>` : ''}
+                </div>`;
+    }
     return `
-            <header class="sticky top-0 z-40 bg-gradient-to-r from-[#0EA5E9] to-[#2DD4BF] text-white shadow-lg shadow-sky-950/10">
-                <div class="mx-auto w-full max-w-4xl px-4 md:px-6 py-3 md:py-4">
-                    <div class="flex flex-row items-center justify-between gap-4">
-                        <div class="flex items-center gap-3">
-                            <div class="flex h-10 w-10 md:h-11 md:w-11 shrink-0 items-center justify-center rounded-2xl bg-white/20 shadow-lg shadow-sky-950/10">
-                                <i data-lucide="brain" class="h-5 w-5 md:h-6 md:w-6"></i>
+                <header class="sticky top-0 z-40 bg-white border-b border-sky-100 shadow-sm">
+                    <div class="mx-auto w-full max-w-6xl px-4 md:px-6 py-3 flex items-center justify-between gap-4">
+                        <div class="flex items-center gap-4">
+                            <div class="flex h-16 w-16 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-brand-mint to-brand-blue shadow-md" style="width:72px;height:72px;">
+                                <img src="476607564_1118966020245066_3011246608916633901_n.jpg" alt="logo" style="width:60px;height:60px;object-fit:cover;border-radius:6px;">
                             </div>
                             <div>
-                                <p class="text-[10px] md:text-xs font-semibold uppercase tracking-[0.22em] text-sky-50">Sàng lọc học đường</p>
-                                <h1 class="text-sm md:text-2xl font-black tracking-tight">Khảo Sát Sức Khỏe Tâm Lý</h1>
+                                <h1 class="text-lg md:text-2xl font-black tracking-tight text-brand-dark">THPT GIA LỘC</h1>
+                                <p class="text-[10px] md:text-[11px] font-bold uppercase tracking-[0.2em] text-slate-400">Khảo sát tâm lý học đường</p>
                             </div>
                         </div>
+                        <div>${userHtml}</div>
                     </div>
-                    ${step === 'quiz' ? `
-                    <div class="mt-3 rounded-2xl border border-white/15 bg-white/10 p-3 backdrop-blur">
-                        <div class="mb-2 flex items-center justify-between gap-6">
-                            <span class="text-xs font-semibold uppercase tracking-[0.18em] text-sky-50">Tiến độ</span>
-                            <strong class="font-mono text-sm text-white">${answeredCount}/${QUESTIONS.length}</strong>
-                        </div>
-                        <div class="h-2 w-full overflow-hidden rounded-full bg-white/15">
-                            <div class="h-full rounded-full bg-white transition-all duration-300" style="width: ${progress}%"></div>
-                        </div>
-                    </div>
-                    ` : ''}
-                </div>
-            </header>`;
+                    ${step === 'quiz' ? '<div class="w-full bg-brand-surface border-t border-teal-100 px-4 py-2"><div class="mx-auto w-full max-w-5xl flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-6"><span class="text-xs font-bold uppercase tracking-[0.18em] text-brand-mint text-center whitespace-nowrap">Tiến độ (Câu ' + (currentIndex + 1) + '/' + QUESTIONS.length + ')</span><div class="w-full max-w-[32rem] sm:max-w-[40rem] md:max-w-[48rem] h-3 overflow-hidden rounded-full bg-slate-100"><div class="h-full rounded-full bg-gradient-to-r from-brand-mint to-brand-blue transition-all duration-300" style="width: ' + (((currentIndex + 1) / QUESTIONS.length) * 100) + '%"></div></div></div></div>' : ''}
+                </header>`;
 }
 
 function renderStart() {
     return `
-            <section class="mx-auto grid w-full max-w-4xl grid-cols-1 md:grid-cols-[1.08fr_0.92fr] items-center gap-8 px-4 md:px-6 py-10 md:py-12 animate-fade-in">
-                <div class="rounded-[2rem] border border-sky-100 bg-white p-6 md:p-10 shadow-xl shadow-sky-100/70">
-                    <div class="mb-8 inline-flex items-center gap-2 rounded-full border border-sky-100 bg-sky-50 px-3 py-2 text-sm font-bold text-sky-700">
-                        <i data-lucide="shield-check" class="h-4 w-4"></i><span>DASS-21 + MBI-SS chuẩn</span>
+            <div class="w-full flex-1 flex items-center justify-center min-h-[calc(100vh-80px)] animate-fade-in bg-brand-surface">
+                <section class="mx-auto flex flex-col items-center text-center w-full max-w-4xl px-6 py-12">
+                    <div class="mb-6 inline-flex items-center gap-2 rounded-full border border-teal-200 bg-white px-5 py-2 text-sm font-bold text-teal-700 shadow-sm">
+                        <i data-lucide="shield-check" class="h-4 w-4 text-emerald-500"></i><span>Bảo mật & Chuẩn y tế DASS-21, MBI-SS</span>
                     </div>
-                    <h2 class="max-w-3xl text-4xl md:text-6xl font-black leading-[1.1] md:leading-[0.95] tracking-tight text-[#0F3B57]">Khảo Sát Tâm Lý</h2>
-                    <p class="mt-6 text-base leading-7 text-slate-600">
-                        Một trải nghiệm khảo sát mạch lạc, ẩn danh. Bao gồm thang đo DASS-21 về mức độ Căng thẳng, Lo âu, Trầm cảm và MBI-SS về kiệt quệ học đường.
+                    <h2 class="text-4xl md:text-6xl font-black leading-tight tracking-tight text-brand-dark mb-6">
+                        Khảo Sát <span class="text-brand-blue">Tâm Lý Học Đường</span>
+                    </h2>
+                    <div class="w-full max-w-2xl text-left">
+                        <p class="mt-2 text-lg leading-8 text-slate-600 font-medium">
+                            Hệ thống đánh giá chuyên sâu giúp bạn hiểu rõ mức độ Căng thẳng, Lo âu, Trầm cảm và Kiệt quệ.
+                            Một khảo sát tâm lý học đường mạch lạc, ẩn danh, sử dụng thang đo chuẩn hoá DASS-21 để đánh giá Căng thẳng, Lo âu và Trầm cảm, cùng thang đo MBI-SS để đánh giá Kiệt quệ học đường.
+                        </p>
+                        ${currentUser?.isIncognito ? `
+                        <p class="mt-4 text-sm leading-6 text-slate-500">
+                            Dữ liệu được mã hóa ẩn danh.
+                        </p>` : ''}
+                    </div>
+                    <div class="mt-6 grid gap-4 sm:grid-cols-2 w-full max-w-2xl">
+                        <div class="rounded-3xl border border-brand-blue/20 bg-brand-blue/10 p-5 text-center shadow-sm">
+                            <p class="text-sm font-semibold uppercase tracking-[0.22em] text-brand-dark">DASS-21</p>
+                            <p class="mt-3 text-3xl font-black text-brand-blue">21 câu</p>
+                        </div>
+                        <div class="rounded-3xl border border-brand-mint/20 bg-brand-mint/10 p-5 text-center shadow-sm">
+                            <p class="text-sm font-semibold uppercase tracking-[0.22em] text-brand-dark">MBI-SS</p>
+                            <p class="mt-3 text-3xl font-black text-brand-blue">15 câu</p>
+                        </div>
+                    </div>
+                    <p class="mt-6 text-lg leading-8 text-slate-600 max-w-2xl font-medium">
+                        Thời gian hoàn thành dự kiến: 3 phút
                     </p>
-                    <div class="mt-8 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <article class="rounded-3xl border border-sky-100 bg-[#F0FDFA] p-5">
-                            <p class="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">DASS-21</p>
-                            <h3 class="mt-2 text-2xl font-black text-[#0F3B57]">21 câu</h3>
-                        </article>
-                        <article class="rounded-3xl border border-sky-100 bg-[#F0F9FF] p-5">
-                            <p class="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">MBI-SS</p>
-                            <h3 class="mt-2 text-2xl font-black text-[#0F3B57]">15 câu</h3>
-                        </article>
+                    <div class="mt-10">
+                        <button type="button" onclick="handleStart()" class="inline-flex items-center justify-center gap-3 rounded-full bg-gradient-to-r from-brand-blue to-brand-mint px-10 py-5 text-xl font-black text-white shadow-xl shadow-teal-200/80">
+                            <span>Bắt đầu kiểm tra</span><i data-lucide="arrow-right" class="h-6 w-6"></i>
+                        </button>
                     </div>
-                    <button type="button" onclick="handleStart()" class="mt-8 flex w-full md:w-auto items-center justify-center gap-3 rounded-2xl bg-gradient-to-r from-[#0EA5E9] to-[#14B8A6] px-6 py-4 text-base font-black text-white shadow-xl shadow-sky-200/70 transition hover:-translate-y-0.5 hover:from-[#0284C7] hover:to-[#0D9488]">
-                        <span>Bắt đầu khảo sát</span><i data-lucide="arrow-right" class="h-5 w-5"></i>
-                    </button>
-                </div>
-                <aside class="rounded-[2rem] border border-sky-100 bg-white p-6 shadow-xl shadow-sky-100/60">
-                    <div class="rounded-[1.5rem] bg-gradient-to-br from-[#0EA5E9] to-[#2DD4BF] p-6 text-white overflow-hidden relative">
-                        <svg viewBox="0 0 300 220" class="w-full h-40 md:h-48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                            <circle cx="150" cy="118" r="88" fill="rgba(255,255,255,0.12)"/>
-                            <circle cx="150" cy="118" r="60" fill="rgba(255,255,255,0.10)"/>
-                            <path d="M150 60 Q170 75 165 95 Q185 90 190 108 Q195 128 178 138" stroke="rgba(255,255,255,0.55)" stroke-width="4" fill="none" stroke-linecap="round"/>
-                            <path d="M150 60 Q130 75 135 95 Q115 90 110 108 Q105 128 122 138" stroke="rgba(255,255,255,0.55)" stroke-width="4" fill="none" stroke-linecap="round"/>
-                            <ellipse cx="150" cy="165" rx="46" ry="14" fill="rgba(255,255,255,0.18)"/>
-                            <path d="M110 168 Q150 200 190 168 Q188 150 150 150 Q112 150 110 168 Z" fill="#ffffff" opacity="0.92"/>
-                            <circle cx="150" cy="118" r="30" fill="#ffffff" opacity="0.95"/>
-                            <path d="M138 108 Q150 98 162 108" stroke="#0EA5E9" stroke-width="3" fill="none" stroke-linecap="round"/>
-                            <path d="M141 122 Q150 128 159 122" stroke="#0EA5E9" stroke-width="3" fill="none" stroke-linecap="round"/>
-                            <circle cx="80" cy="55" r="5" fill="rgba(255,255,255,0.5)"/>
-                            <circle cx="225" cy="45" r="7" fill="rgba(255,255,255,0.4)"/>
-                            <circle cx="245" cy="90" r="4" fill="rgba(255,255,255,0.5)"/>
-                        </svg>
-                        <p class="mt-4 text-sm font-semibold uppercase tracking-[0.2em] text-sky-50">Tổng quan</p>
-                        <h3 class="mt-3 text-2xl font-black tracking-tight">Trải nghiệm thuận tiện</h3>
-                        <p class="mt-4 text-sm leading-7 text-sky-50">Hệ thống lưu tiến độ của bạn. Bạn có thể quay lại đổi đáp án bất cứ lúc nào trước khi nộp.</p>
-                    </div>
-                </aside>
-            </section>`;
+                </section>
+            </div>`;
 }
 
 function renderQuiz() {
     const q = QUESTIONS[currentIndex];
     const answeredCount = Object.keys(answers).length;
-    const progress = ((currentIndex + 1) / QUESTIONS.length) * 100;
     const allAnswered = answeredCount === QUESTIONS.length;
     const isLast = currentIndex === QUESTIONS.length - 1;
-
     const navButtons = QUESTIONS.map((item, idx) => {
-        let cls = 'border-slate-200 bg-white text-slate-400 hover:border-sky-300 hover:text-slate-700';
-        if (currentIndex === idx) cls = 'border-[#0EA5E9] bg-[#0EA5E9] text-white shadow-md shadow-sky-200';
-        else if (answers[item.id] !== undefined) cls = 'border-teal-100 bg-teal-50 text-teal-700';
-        return `<button type="button" onclick="handleJump(${idx})" class="flex h-10 w-10 md:h-9 md:w-9 items-center justify-center rounded-xl border text-xs font-black transition ${cls}"><span>${idx + 1}</span></button>`;
+        let cls = 'nav-btn-default';
+        if (currentIndex === idx) cls = 'nav-btn-active';
+        else if (answers[item.id] !== undefined) cls = 'nav-btn-answered';
+        return '<button type="button" onclick="handleJump(' + idx + ')" class="nav-btn w-full text-xs transition ' + cls + '"><span>' + (idx + 1) + '</span></button>';
     }).join('');
-
     const optionsHTML = q.scale.map(opt => {
         const isSelected = answers[q.id] === opt.value;
-        const bgContainer = isSelected ? 'border-[#0EA5E9] bg-sky-50 shadow-lg shadow-sky-100/70' : 'border-slate-200 bg-white hover:border-sky-200 hover:bg-[#F5FAFF]';
-        const bgNumber = isSelected ? 'bg-[#0EA5E9] text-white' : 'bg-slate-100 text-slate-500 group-hover:bg-sky-100 group-hover:text-sky-700';
-        return `
-                <div onclick="handleAnswer('${q.id}', ${opt.value})" class="group flex cursor-pointer flex-col gap-3 rounded-2xl border p-4 transition hover:-translate-y-0.5 ${bgContainer}">
-                    <span class="flex h-10 w-10 items-center justify-center rounded-xl text-sm font-black transition ${bgNumber}">${opt.value}</span>
-                    <span class="text-sm font-bold leading-5 text-slate-700">${opt.label}</span>
-                </div>`;
+        const bgC = isSelected ? 'border-brand-blue bg-sky-50 shadow-md shadow-sky-100' : 'border-slate-200 bg-white hover:border-sky-300 hover:bg-slate-50';
+        const bgN = isSelected ? 'bg-brand-blue text-white' : 'bg-slate-100 text-slate-500 group-hover:bg-sky-100 group-hover:text-sky-700';
+        return '<div onclick="handleAnswer(\'' + q.id + '\', ' + opt.value + ')" class="group flex cursor-pointer flex-col gap-3 rounded-2xl border p-4 transition-all duration-200 ' + bgC + '"><span class="flex h-10 w-10 items-center justify-center rounded-xl text-sm font-black transition ' + bgN + '">' + opt.value + '</span><span class="text-sm font-bold leading-5 text-slate-700">' + opt.label + '</span></div>';
     }).join('');
-
     return `
-            <section class="mx-auto flex w-full max-w-4xl flex-col gap-5 px-4 md:px-8 py-6 md:py-8 animate-fade-in">
-                <nav class="rounded-[1.75rem] border border-sky-100 bg-white p-4 shadow-sm">
-                    <div class="flex flex-wrap justify-center gap-2">${navButtons}</div>
-                </nav>
-                <article class="overflow-hidden rounded-[2rem] border border-sky-100 bg-white shadow-xl shadow-sky-100/60">
-                    <div class="h-2 bg-slate-100">
-                        <div class="h-full bg-gradient-to-r from-[#0EA5E9] to-[#2DD4BF] transition-all duration-300" style="width: ${progress}%"></div>
-                    </div>
-                    <div class="p-5 md:p-10">
-                        <div class="mb-6 flex flex-wrap items-center gap-2">
-                            <span class="rounded-full bg-sky-50 px-3 py-1.5 text-xs font-black uppercase tracking-[0.16em] text-sky-700">${q.sectionTitle}</span>
-                            <span class="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-bold uppercase tracking-[0.16em] text-slate-600">Câu ${q.order}</span>
+                <section class="mx-auto flex w-full max-w-4xl flex-col gap-5 px-4 md:px-8 py-6 md:py-8 animate-fade-in">
+                    <nav class="rounded-[1.75rem] border border-sky-100 bg-white p-4 shadow-sm">
+                        <div class="nav-box">
+                            <div class="nav-grid">${navButtons}</div>
                         </div>
-                        <h2 class="max-w-4xl text-xl md:text-4xl font-black leading-tight tracking-[-0.03em] text-[#0F3B57]">${q.text}</h2>
-                        <div class="mt-8 grid gap-3 ${q.section === 'MBI-SS' ? 'grid-cols-2 md:grid-cols-7' : 'grid-cols-1 md:grid-cols-4'}">${optionsHTML}</div>
-                    </div>
-                    <footer class="flex flex-row items-center justify-between gap-3 border-t border-slate-100 bg-[#F5FAFF] p-4 md:p-6">
-                        <button type="button" onclick="handlePrev()" ${currentIndex === 0 ? 'disabled' : ''} class="inline-flex items-center justify-center gap-2 rounded-2xl px-4 md:px-5 py-3 font-black text-slate-600 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-35">
-                            <i data-lucide="chevron-left" class="h-5 w-5"></i><span class="hidden md:inline">Câu trước</span>
-                        </button>
-                        ${isLast ? `
-                        <button type="button" onclick="handleSubmit()" ${!allAnswered ? 'disabled' : ''} class="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-[#0EA5E9] to-[#14B8A6] px-5 md:px-6 py-3 font-black text-white shadow-lg shadow-sky-200/70 transition hover:-translate-y-0.5 hover:from-[#0284C7] hover:to-[#0D9488] disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:translate-y-0">
-                            <span>Nộp bài</span><i data-lucide="check-circle" class="h-5 w-5"></i>
-                        </button>` : `
-                        <button type="button" onclick="handleNext()" class="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-[#0EA5E9] to-[#14B8A6] px-5 md:px-6 py-3 font-black text-white shadow-lg shadow-sky-200/70 transition hover:-translate-y-0.5 hover:from-[#0284C7] hover:to-[#0D9488]">
-                            <span>Tiếp theo</span><i data-lucide="chevron-right" class="h-5 w-5"></i>
-                        </button>`}
-                    </footer>
-                </article>
-            </section>`;
+                    </nav>
+                    <article class="overflow-hidden rounded-[2rem] border border-sky-100 bg-white shadow-xl shadow-sky-100/60">
+                        <div class="p-5 md:p-10">
+                            <div class="mb-6 flex flex-wrap items-center gap-2">
+                                <span class="rounded-full bg-brand-dark text-white px-3 py-1.5 text-xs font-black uppercase tracking-[0.16em]">${q.sectionTitle}</span>
+                                <span class="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-bold uppercase tracking-[0.16em] text-slate-600">Câu ${currentIndex + 1}</span>
+                            </div>
+                            <h2 class="max-w-4xl text-xl md:text-4xl font-black leading-tight tracking-[-0.03em] text-brand-dark">${q.text}</h2>
+                            <div class="mt-8 grid gap-3 ${q.section === 'MBI-SS' ? 'grid-cols-2 md:grid-cols-7' : 'grid-cols-1 md:grid-cols-4'}">${optionsHTML}</div>
+                        </div>
+                        <footer class="flex items-center justify-between gap-3 border-t border-slate-100 bg-brand-surface p-4 md:p-6">
+                            <button type="button" onclick="handlePrev()" ${currentIndex === 0 ? 'disabled' : ''} class="inline-flex items-center gap-2 rounded-2xl px-4 py-3 font-black text-slate-600 transition hover:bg-white disabled:opacity-35">
+                                <i data-lucide="chevron-left" class="h-5 w-5"></i><span class="hidden md:inline">Câu trước</span>
+                            </button>
+                            ${isLast ? '<button type="button" onclick="handleSubmit()" ' + (!allAnswered ? 'disabled' : '') + ' class="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-brand-blue to-brand-mint px-6 py-3 font-black text-white shadow-lg disabled:opacity-45"><span>Nộp bài</span><i data-lucide="check-circle" class="h-5 w-5"></i></button>' : '<button type="button" onclick="handleNext()" class="inline-flex items-center gap-2 rounded-2xl bg-brand-dark px-6 py-3 font-black text-white shadow-lg"><span>Tiếp theo</span><i data-lucide="chevron-right" class="h-5 w-5"></i></button>'}
+                        </footer>
+                    </article>
+                </section>`;
 }
 
 function renderResult() {
     const MBI_ROWS = [
-        { id: 'emotionalExhaustion', title: 'Kiệt quệ cảm xúc', max: 30, helper: '' },
-        { id: 'cynicism', title: 'Hoài nghi', max: 24, helper: '' },
-        { id: 'academicEfficacy', title: 'kết quả', max: 36, helper: '' }
+        { id: 'emotionalExhaustion', title: 'Kiệt quệ cảm xúc', max: 30 },
+        { id: 'cynicism', title: 'Hoài nghi', max: 24 },
+        { id: 'academicEfficacy', title: 'Ảnh hưởng học tập', max: 36 }
     ];
     const DASS_ROWS = [
         { id: 'stress', title: 'Stress', max: 42 },
         { id: 'anxiety', title: 'Lo âu', max: 42 },
         { id: 'depression', title: 'Trầm cảm', max: 42 }
     ];
-
     const mbiHTML = MBI_ROWS.map(row => {
         const val = currentScores[row.id];
         const pct = Math.round((val / row.max) * 100);
-        return `
-                <article class="rounded-3xl border border-sky-100 bg-[#F5FAFF] p-5">
-                    <div class="flex items-end justify-between gap-4">
-                        <div>
-                            <h3 class="text-base font-black text-[#0F3B57]">${row.title}</h3>
-                            <p class="mt-1 text-xs font-semibold text-slate-500">${row.helper}</p>
-                        </div>
-                        <strong class="font-mono text-2xl text-[#0F3B57]">${val}<span class="text-sm text-slate-400">/${row.max}</span></strong>
-                    </div>
-                    <div class="mt-4 h-2 overflow-hidden rounded-full bg-white">
-                        <div class="h-full rounded-full bg-gradient-to-r from-[#0EA5E9] to-[#2DD4BF]" style="width: ${pct}%"></div>
-                    </div>
-                </article>`;
+        return '<article class="rounded-2xl border border-sky-100 bg-white p-4 shadow-sm"><div class="flex items-end justify-between gap-4"><h3 class="text-sm font-black text-brand-dark">' + row.title + '</h3><strong class="font-mono text-xl text-brand-dark">' + val + '<span class="text-xs text-slate-400">/' + row.max + '</span></strong></div><div class="mt-3 h-2 overflow-hidden rounded-full bg-slate-100"><div class="h-full rounded-full bg-gradient-to-r from-brand-blue to-brand-mint" style="width: ' + pct + '%"></div></div></article>';
     }).join('');
-
     const dassHTML = DASS_ROWS.map(row => {
         const rawVal = currentScores[row.id];
         const config = getLevelConfig(row.id, rawVal);
-        return `
-                <article class="rounded-3xl border p-5 ${config.className}">
-                    <div class="flex items-center justify-between gap-3">
-                        <h3 class="font-black">${row.title}</h3>
-                        <span class="h-3 w-3 rounded-full ${config.dot}"></span>
-                    </div>
-                    <p class="mt-4 font-mono text-3xl font-black">${rawVal * 2}<span class="text-sm opacity-60">/${row.max}</span></p>
-                    <p class="mt-2 text-sm font-black">${config.label}</p>
-                    <p class="mt-3 text-xs leading-5 opacity-80">${getAdvice(config.label)}</p>
-                </article>`;
+        return '<article class="rounded-2xl border p-5 shadow-sm ' + config.className + '"><div class="flex items-center justify-between gap-3"><div class="flex items-center gap-2"><i data-lucide="' + config.icon + '" class="w-5 h-5"></i><h3 class="font-black">' + row.title + '</h3></div><span class="h-3 w-3 rounded-full ' + config.dot + '"></span></div><p class="mt-3 font-mono text-3xl font-black">' + (rawVal * 2) + '<span class="text-sm opacity-60">/' + row.max + '</span></p><p class="mt-1 text-sm font-black">' + config.label + '</p><div class="mt-3 p-3 rounded-xl bg-white/60 border border-current/10"><p class="text-xs leading-5"><i data-lucide="lightbulb" class="w-3 h-3 inline mr-1"></i>' + getAdvice(config.label) + '</p></div></article>';
     }).join('');
-
+    const cloudMsg = supabaseReady
+        ? '<span class="inline-flex items-center gap-2 rounded-full bg-emerald-50 border border-emerald-200 px-4 py-2 text-xs font-bold text-emerald-700"><i data-lucide="cloud" class="w-4 h-4"></i> Kết quả đã lưu lên Supabase Cloud</span>'
+        : '<span class="inline-flex items-center gap-2 rounded-full bg-amber-50 border border-amber-200 px-4 py-2 text-xs font-bold text-amber-700"><i data-lucide="hard-drive" class="w-4 h-4"></i> Kết quả lưu trên máy chủ</span>';
+    const div = communityStats.count > 0 ? communityStats.count : 1;
     return `
-            <section class="mx-auto grid w-full max-w-6xl grid-cols-1 lg:grid-cols-[0.95fr_1.05fr] gap-4 px-3 sm:px-4 md:px-6 py-4 md:py-6 animate-fade-in">
-                <aside class="rounded-[2rem] border border-sky-100 bg-white p-4 md:p-5 shadow-xl shadow-sky-100/60">
-                    <div class="mb-8 flex items-start justify-between gap-4">
-                        <div>
-                            <p class="text-xs font-black uppercase tracking-[0.2em] text-sky-700">Báo cáo MBI-SS</p>
-                            <h2 class="mt-2 text-2xl md:text-3xl font-black tracking-[-0.04em] text-[#0F3B57]">Kết quả của bạn</h2>
+                <section class="mx-auto flex flex-col w-full max-w-4xl gap-6 px-4 py-8 animate-fade-in">
+                    <div class="flex items-center justify-center">${cloudMsg}</div>
+                    <!-- MBI-SS -->
+                    <div class="rounded-[2rem] border border-sky-100 bg-white p-6 shadow-xl shadow-sky-100/50">
+                        <div class="mb-6 flex items-center justify-between">
+                            <div><p class="text-xs font-black uppercase tracking-[0.2em] text-slate-400">Đánh giá kiệt quệ học đường</p><h2 class="text-2xl font-black tracking-tight text-brand-dark">Chỉ số Burnout (MBI-SS)</h2></div>
+                            <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-teal-50 text-teal-600"><i data-lucide="battery-warning" class="h-6 w-6"></i></div>
                         </div>
-                        <div class="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-sky-50 text-sky-700">
-                            <i data-lucide="heart-pulse" class="h-6 w-6"></i>
-                        </div>
-                    </div>
-                    <div class="mb-6 rounded-3xl border border-sky-100 bg-[#F5FAFF] p-4 md:p-5">
-                        <p class="text-center text-xs font-black uppercase tracking-[0.18em] text-slate-500">Chỉ số Burnout</p>
-                        <div class="chart-wrap h-40 md:h-48 mt-2">
-                            <canvas id="donutChart"></canvas>
-                            <div class="donut-center">
-                                <strong id="donutCenterValue" class="font-mono text-3xl font-black text-[#0F3B57]">0%</strong>
-                                <span class="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Mức nguy cơ</span>
+                        <div class="grid grid-cols-1 md:grid-cols-[1fr_1.5fr] gap-6">
+                            <div class="rounded-3xl border border-slate-100 bg-slate-50 p-4 flex flex-col items-center justify-center">
+                                <p class="text-xs font-black uppercase tracking-[0.18em] text-slate-500 mb-2">Mức độ nguy cơ</p>
+                                <div class="chart-wrap h-40 w-40"><canvas id="donutChart"></canvas><div class="donut-center"><strong id="donutCenterValue" class="font-mono text-3xl font-black text-brand-dark">0%</strong></div></div>
                             </div>
+                            <div class="space-y-3 flex flex-col justify-center">${mbiHTML}</div>
                         </div>
                     </div>
-                    <div class="space-y-4">${mbiHTML}</div>
-                </aside>
-
-                <div class="space-y-6">
-                    <section class="rounded-[2rem] border border-sky-100 bg-white p-6 shadow-xl shadow-sky-100/60">
-                        <div class="mb-6 flex items-center gap-3">
-                            <div class="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-[#0EA5E9] to-[#2DD4BF] text-white">
-                                <i data-lucide="brain" class="h-5 w-5"></i>
+                    <!-- DASS-21 -->
+                    <div class="rounded-[2rem] border border-sky-100 bg-white p-6 shadow-xl shadow-sky-100/50">
+                        <div class="mb-6 flex items-center justify-between">
+                            <div><p class="text-xs font-black uppercase tracking-[0.2em] text-slate-400">Đánh giá tâm lý lâm sàng</p><h2 class="text-2xl font-black tracking-tight text-brand-dark">Chỉ số DASS-21</h2></div>
+                            <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-sky-50 text-sky-600"><i data-lucide="brain" class="h-6 w-6"></i></div>
+                        </div>
+                        <div class="chart-wrap h-64 mb-6"><canvas id="dassBarChart"></canvas></div>
+                        <div class="grid grid-cols-1 gap-4">${dassHTML}</div>
+                    </div>
+                    <!-- Thống kê cộng đồng -->
+                    <div class="rounded-[2rem] border border-sky-100 bg-white p-6 shadow-xl shadow-sky-100/50">
+                        <div class="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                            <div><p class="text-xs font-black uppercase tracking-[0.18em] text-slate-400">So sánh tương quan</p><h2 class="text-2xl font-black tracking-tight text-brand-dark">Thống kê cộng đồng</h2></div>
+                            <div class="inline-flex items-center gap-2 rounded-full bg-slate-100 px-4 py-2 text-xs font-bold text-slate-600"><i data-lucide="users" class="h-4 w-4"></i><span>${communityStats.count} lượt</span></div>
+                        </div>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                            <div class="bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                                <h3 class="text-xs font-black uppercase tracking-widest text-brand-dark mb-4">MBI-SS (Trung bình)</h3>
+                                <div class="chart-wrap h-48"><canvas id="communityMbiChart"></canvas></div>
                             </div>
-                            <div>
-                                <p class="text-xs font-black uppercase tracking-[0.18em] text-slate-500">DASS-21</p>
-                                <h2 class="text-xl font-black tracking-[-0.03em] text-[#0F3B57]">Stress / Lo âu / Trầm cảm</h2>
+                            <div class="bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                                <h3 class="text-xs font-black uppercase tracking-widest text-brand-dark mb-4">DASS-21 (Trung bình)</h3>
+                                <div class="chart-wrap h-48"><canvas id="communityDassChart"></canvas></div>
                             </div>
                         </div>
-                        <div class="chart-wrap h-56 md:h-60 mb-4"><canvas id="radarChart"></canvas></div>
-                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">${dassHTML}</div>
-                    </section>
-
-                    <section class="rounded-[2rem] border border-sky-100 bg-white p-6 shadow-xl shadow-sky-100/60">
-                        <div class="mb-6 flex flex-row items-end justify-between gap-3">
-                            <div>
-                                <p class="text-xs font-black uppercase tracking-[0.18em] text-sky-700">Thống kê cộng đồng</p>
-                                <h2 class="mt-1 text-xl font-black tracking-[-0.03em] text-[#0F3B57]">Điểm trung bình</h2>
-                            </div>
-                            <div class="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-2 text-xs font-bold text-slate-700">
-                                <i data-lucide="bar-chart" class="h-4 w-4"></i><span>${stats.count} lượt</span>
-                            </div>
+                        <div class="mt-8 flex justify-center">
+                            <button type="button" onclick="handleReset()" class="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-brand-blue to-brand-mint px-8 py-4 font-black text-white shadow-lg">
+                                <i data-lucide="rotate-ccw" class="h-5 w-5"></i><span>Làm lại khảo sát</span>
+                            </button>
                         </div>
-                        <div class="chart-wrap h-56 w-full"><canvas id="statsChart"></canvas></div>
-                        <button type="button" onclick="handleReset()" class="mt-6 flex w-full md:w-auto items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-[#0EA5E9] to-[#14B8A6] px-6 py-4 font-black text-white shadow-lg shadow-sky-200/70 transition hover:-translate-y-0.5 hover:from-[#0284C7] hover:to-[#0D9488]">
-                            <i data-lucide="rotate-ccw" class="h-5 w-5"></i><span>Làm lại khảo sát</span>
-                        </button>
-                    </section>
-                </div>
-            </section>`;
+                    </div>
+                </section>`;
 }
 
-// --- 5. LOGIC ĐIỀU HƯỚNG ---
 function renderApp() {
     const root = document.getElementById('root');
-    const isResult = step === 'result';
-    root.innerHTML = `
-                ${renderHeader()}
-                <main class="${isResult ? 'result-page' : ''}">
-                    ${step === 'start' ? renderStart() : ''}
-                    ${step === 'quiz' ? renderQuiz() : ''}
-                    ${step === 'result' ? renderResult() : ''}
-                </main>
-            `;
+    let content = '';
+    if (step !== 'auth') content += renderHeader();
+    content += '<main class="flex-1 flex flex-col w-full">';
+    if (step === 'auth') content += renderAuth();
+    else if (step === 'start') content += renderStart();
+    else if (step === 'quiz') content += renderQuiz();
+    else if (step === 'result') content += renderResult();
+    content += '</main>';
+    root.innerHTML = content;
     lucide.createIcons();
-    if (step === 'result') { initRadarChart(); initDonutChart(); initStatsChart(); }
+    if (step === 'result') { initDonutChart(); initDassBarChart(); initCommunityCharts(); }
 }
 
 function handleStart() { step = 'quiz'; renderApp(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
@@ -384,11 +611,8 @@ function handlePrev() { if (currentIndex > 0) { currentIndex--; renderApp(); } }
 function handleNext() { if (currentIndex < QUESTIONS.length - 1) { currentIndex++; renderApp(); } }
 function handleJump(idx) { currentIndex = idx; renderApp(); }
 function handleAnswer(qId, val) { answers[qId] = val; renderApp(); }
-
-function handleSubmit() {
+async function handleSubmit() {
     if (Object.keys(answers).length !== QUESTIONS.length) return;
-
-    // Tính điểm (DASS ở đây giữ nguyên điểm thô, hàm Result sẽ tự x2 khi hiển thị)
     currentScores = {
         emotionalExhaustion: getSum(answers, MBI_EMOTIONAL_EXHAUSTION),
         cynicism: getSum(answers, MBI_CYNICISM),
@@ -397,162 +621,70 @@ function handleSubmit() {
         anxiety: getSum(answers, DASS_ANXIETY),
         depression: getSum(answers, DASS_DEPRESSION)
     };
-
-    // Cập nhật stats
-    stats.count += 1;
-    stats.emotionalExhaustion += currentScores.emotionalExhaustion;
-    stats.cynicism += currentScores.cynicism;
-    stats.academicEfficacy += currentScores.academicEfficacy;
-    stats.stress += (currentScores.stress * 2);
-    stats.anxiety += (currentScores.anxiety * 2);
-    stats.depression += (currentScores.depression * 2);
-
-    localStorage.setItem('mental_health_survey_v2', JSON.stringify(stats));
-
+    await saveResult(currentScores);
+    await loadCommunityStats();
     step = 'result';
     renderApp();
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
-
 function handleReset() {
+    QUESTIONS.length = 0;
+    const newArr = shuffleArray([...DASS_QUESTIONS, ...MBI_QUESTIONS]).map((q, idx) => ({ ...q, order: idx + 1 }));
+    QUESTIONS.push(...newArr);
     answers = {}; currentIndex = 0; step = 'start';
     renderApp(); window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-// --- 6. KHỞI TẠO BIỂU ĐỒ ---
-
-// Biểu đồ radar cho 3 chỉ số DASS-21 của lần làm bài hiện tại
-function initRadarChart() {
-    const canvas = document.getElementById('radarChart');
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-
-    const rows = [
-        { key: 'stress', label: 'Stress' },
-        { key: 'anxiety', label: 'Lo âu' },
-        { key: 'depression', label: 'Trầm cảm' }
-    ];
-    const values = rows.map(r => currentScores[r.key] * 2);
-    const pointColors = rows.map(r => getLevelConfig(r.key, currentScores[r.key]).hex);
-
-    if (radarChartInstance) radarChartInstance.destroy();
-    radarChartInstance = new Chart(ctx, {
-        type: 'radar',
-        data: {
-            labels: rows.map(r => r.label),
-            datasets: [{
-                label: 'Điểm của bạn',
-                data: values,
-                backgroundColor: 'rgba(14, 165, 233, 0.18)',
-                borderColor: '#0EA5E9',
-                borderWidth: 2,
-                pointBackgroundColor: pointColors,
-                pointBorderColor: '#ffffff',
-                pointBorderWidth: 2,
-                pointRadius: 6,
-                pointHoverRadius: 7
-            }]
-        },
-        options: {
-            responsive: true, maintainAspectRatio: false,
-            animation: { duration: 1400, easing: 'easeOutElastic' },
-            scales: {
-                r: {
-                    min: 0, max: 42,
-                    ticks: { stepSize: 14, backdropColor: 'transparent', font: { size: 10, family: 'Inter' } },
-                    pointLabels: { font: { size: 13, weight: 'bold', family: 'Inter' }, color: '#0F3B57' },
-                    grid: { color: '#DCEEFB' },
-                    angleLines: { color: '#DCEEFB' }
-                }
-            },
-            plugins: {
-                legend: { display: false },
-                tooltip: { callbacks: { label: ctx => ctx.parsed.r + '/42 điểm' } }
-            }
-        }
-    });
-}
-
-// Biểu đồ donut tổng hợp chỉ số Burnout (MBI-SS) của lần làm bài hiện tại
 function initDonutChart() {
     const canvas = document.getElementById('donutChart');
     if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-
-    const exhaustion = currentScores.emotionalExhaustion; // /30
-    const cynicism = currentScores.cynicism; // /24
-    const lowEfficacy = 36 - currentScores.academicEfficacy; // /36, càng cao càng đáng lo
-
+    const exhaustion = currentScores.emotionalExhaustion;
+    const cynicism = currentScores.cynicism;
+    const lowEfficacy = 36 - currentScores.academicEfficacy;
     const total = exhaustion + cynicism + lowEfficacy;
     const maxTotal = 30 + 24 + 36;
     const riskPct = Math.round((total / maxTotal) * 100);
-    const centerEl = document.getElementById('donutCenterValue');
-    if (centerEl) centerEl.textContent = riskPct + '%';
-
+    const el = document.getElementById('donutCenterValue');
+    if (el) el.textContent = riskPct + '%';
     if (donutChartInstance) donutChartInstance.destroy();
-    donutChartInstance = new Chart(ctx, {
+    donutChartInstance = new Chart(canvas.getContext('2d'), {
         type: 'doughnut',
-        data: {
-            labels: ['Kiệt quệ cảm xúc', 'Hoài nghi', 'Ảnh hưởng '],
-            datasets: [{
-                data: [exhaustion, cynicism, lowEfficacy],
-                backgroundColor: ['#0EA5E9', '#F59E0B', '#F43F5E'],
-                borderColor: '#ffffff',
-                borderWidth: 3,
-                cutout: '72%'
-            }]
-        },
-        options: {
-            responsive: true, maintainAspectRatio: false,
-            animation: { duration: 1200, easing: 'easeOutQuart' },
-            plugins: {
-                legend: { position: 'bottom', labels: { font: { size: 10, family: 'Inter' }, boxWidth: 10, padding: 10 } },
-                tooltip: { callbacks: { label: ctx => ctx.label + ': ' + ctx.parsed } }
-            }
-        }
+        data: { labels: ['Kiệt quệ', 'Hoài nghi', 'Ảnh hưởng'], datasets: [{ data: [exhaustion, cynicism, lowEfficacy], backgroundColor: [THEME.primary, '#F59E0B', '#F43F5E'], borderColor: '#fff', borderWidth: 3, cutout: '72%' }] },
+        options: { responsive: true, maintainAspectRatio: false, animation: { duration: 1200 }, plugins: { legend: { position: 'bottom', labels: { font: { size: 10, family: 'Plus Jakarta Sans' }, boxWidth: 10 } } } }
     });
 }
 
-// Biểu đồ cột thống kê trung bình cộng đồng
-function initStatsChart() {
-    const canvas = document.getElementById('statsChart');
+function initDassBarChart() {
+    const canvas = document.getElementById('dassBarChart');
     if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    const div = stats.count > 0 ? stats.count : 1;
-    const data = [
-        Math.round((stats.emotionalExhaustion / div / 30) * 100),
-        Math.round((stats.cynicism / div / 24) * 100),
-        Math.round((stats.academicEfficacy / div / 36) * 100),
-        Math.round((stats.stress / div / 42) * 100),
-        Math.round((stats.anxiety / div / 42) * 100),
-        Math.round((stats.depression / div / 42) * 100)
-    ];
-
-    if (statsChartInstance) statsChartInstance.destroy();
-    statsChartInstance = new Chart(ctx, {
+    const rows = [{ key: 'stress', label: 'Stress' }, { key: 'anxiety', label: 'Lo âu' }, { key: 'depression', label: 'Trầm cảm' }];
+    const values = rows.map(r => currentScores[r.key] * 2);
+    const colors = rows.map(r => getLevelConfig(r.key, currentScores[r.key]).hex);
+    if (dassBarChartInstance) dassBarChartInstance.destroy();
+    dassBarChartInstance = new Chart(canvas.getContext('2d'), {
         type: 'bar',
-        data: {
-            labels: ['Kiệt quệ', 'Hoài nghi', 'Kết quả', 'Stress', 'Lo âu', 'Trầm cảm'],
-            datasets: [{
-                data: data,
-                backgroundColor: ['#0ee983', '#0284C7', '#b81414', '#ebf838', '#2DD4BF', '#9b00f5'],
-                borderRadius: 6, barThickness: 24
-            }]
-        },
-        options: {
-            responsive: true, maintainAspectRatio: false,
-            animation: { duration: 1200, easing: 'easeOutQuart' },
-            scales: {
-                y: { max: 100, ticks: { font: { size: 11, family: 'Inter' } }, border: { dash: [4, 4] } },
-                x: { grid: { display: false }, ticks: { font: { size: 11, weight: 'bold', family: 'Inter' } } }
-            },
-            plugins: {
-                legend: { display: false },
-                tooltip: { callbacks: { label: ctx => ctx.parsed.y + '% ' } }
-            }
-        }
+        data: { labels: rows.map(r => r.label), datasets: [{ data: values, backgroundColor: colors, borderRadius: 8, barThickness: 40 }] },
+        options: { responsive: true, maintainAspectRatio: false, scales: { y: { min: 0, max: 42, grid: { borderDash: [4, 4] } }, x: { grid: { display: false }, ticks: { font: { weight: 'bold', family: 'Plus Jakarta Sans' } } } }, plugins: { legend: { display: false } } }
     });
 }
 
-// Khởi động Ứng dụng
+function initCommunityCharts() {
+    const canvasMbi = document.getElementById('communityMbiChart');
+    const canvasDass = document.getElementById('communityDassChart');
+    if (!canvasMbi || !canvasDass) return;
+    const div = communityStats.count > 0 ? communityStats.count : 1;
+    if (communityMbiChartInstance) communityMbiChartInstance.destroy();
+    communityMbiChartInstance = new Chart(canvasMbi.getContext('2d'), {
+        type: 'bar',
+        data: { labels: ['Kiệt quệ', 'Hoài nghi', 'Ảnh hưởng HT'], datasets: [{ data: [(communityStats.emotionalExhaustion / div).toFixed(1), (communityStats.cynicism / div).toFixed(1), (communityStats.academicEfficacy / div).toFixed(1)], backgroundColor: [THEME.primary, '#F59E0B', '#10B981'], borderRadius: 6, barThickness: 24 }] },
+        options: { responsive: true, maintainAspectRatio: false, scales: { y: { min: 0, max: 40, grid: { borderDash: [4, 4] } }, x: { grid: { display: false }, ticks: { font: { size: 10, weight: 'bold', family: 'Plus Jakarta Sans' } } } }, plugins: { legend: { display: false } } }
+    });
+    if (communityDassChartInstance) communityDassChartInstance.destroy();
+    communityDassChartInstance = new Chart(canvasDass.getContext('2d'), {
+        type: 'bar',
+        data: { labels: ['Stress', 'Lo âu', 'Trầm cảm'], datasets: [{ data: [(communityStats.stress / div).toFixed(1), (communityStats.anxiety / div).toFixed(1), (communityStats.depression / div).toFixed(1)], backgroundColor: ['#F43F5E', '#8B5CF6', THEME.primary], borderRadius: 6, barThickness: 24 }] },
+        options: { responsive: true, maintainAspectRatio: false, scales: { y: { min: 0, max: 42, grid: { borderDash: [4, 4] } }, x: { grid: { display: false }, ticks: { font: { size: 11, weight: 'bold', family: 'Plus Jakarta Sans' } } } }, plugins: { legend: { display: false } } }
+    });
+}
+
 renderApp();
